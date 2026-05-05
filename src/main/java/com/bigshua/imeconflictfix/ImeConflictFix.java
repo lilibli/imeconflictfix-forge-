@@ -17,6 +17,8 @@ import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.*;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.inventory.HangingSignEditScreen;
+import net.minecraft.client.gui.screens.inventory.CreativeModeInventoryScreen;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.eventbus.api.listener.SubscribeEvent;
@@ -42,6 +44,9 @@ public final class ImeConflictFix {
     @Mod.EventBusSubscriber(modid = MODID, value = Dist.CLIENT)
     public static final class ClientEvents {
 
+        /** 跟踪未知界面的 IME 状态，避免每帧重复切换 */
+        private static Boolean unknownScreenImeState = null;
+
         @SubscribeEvent
         public static void onScreenInit(ScreenEvent.Init.Post event) {
             ImeController.init();
@@ -53,26 +58,26 @@ public final class ImeConflictFix {
                 } else {
                     ImeController.setState(true);
                 }
-            } else if (s instanceof SignEditScreen || s instanceof BookEditScreen || s instanceof AnvilScreen) {
+            } else if (s instanceof SignEditScreen || s instanceof HangingSignEditScreen || s instanceof BookEditScreen || s instanceof AnvilScreen) {
                 ImeController.setState(true);
             }
         }
 
         @SubscribeEvent
         public static void onScreenClose(ScreenEvent.Closing event) {
-            Screen s = event.getScreen();
-            if (s instanceof ChatScreen || s instanceof SignEditScreen ||
-                s instanceof BookEditScreen || s instanceof AnvilScreen) {
-                ImeController.setState(null);
-            }
+            // 关任何界面都彻底关闭中文，防止 Shift 等按键切回
+            ImeController.setState(null);
         }
 
         @SubscribeEvent
         public static boolean onKeyPressed(ScreenEvent.KeyPressed.Pre event) {
             Screen s = Minecraft.getInstance().screen;
             if (s == null) return false;
-            if (!(s instanceof ChatScreen || s instanceof SignEditScreen ||
-                  s instanceof BookEditScreen || s instanceof AnvilScreen)) return false;
+            if (!(s instanceof ChatScreen || s instanceof SignEditScreen || s instanceof HangingSignEditScreen ||
+                  s instanceof BookEditScreen || s instanceof AnvilScreen)) {
+                // 未知界面交给 onRender 处理焦点切换，这里只放行按键
+                return false;
+            }
             if (isCommand(s)) return false;
             int k = event.getKeyCode();
             if (k == GLFW.GLFW_KEY_W || k == GLFW.GLFW_KEY_A ||
@@ -86,6 +91,21 @@ public final class ImeConflictFix {
         /** 在屏幕上渲染 IME 组合文字和候选列表 */
         @SubscribeEvent
         public static void onRender(ScreenEvent.Render.Post event) {
+            // 每帧检测输入框焦点，自动切换输入法（仅状态变化时调用）
+            Screen s = Minecraft.getInstance().screen;
+            if (s != null &&
+                !(s instanceof ChatScreen || s instanceof SignEditScreen || s instanceof HangingSignEditScreen ||
+                  s instanceof BookEditScreen || s instanceof AnvilScreen)) {
+                boolean hasFocus = hasEditBoxFocus(s);
+                if (hasFocus && (unknownScreenImeState == null || !unknownScreenImeState)) {
+                    ImeController.setState(true);
+                    unknownScreenImeState = true;
+                } else if (!hasFocus && (unknownScreenImeState == null || unknownScreenImeState)) {
+                    ImeController.setState(false);
+                    unknownScreenImeState = false;
+                }
+            }
+
             Minecraft mc = Minecraft.getInstance();
             GuiGraphics g = event.getGuiGraphics();
             int x = 10;
@@ -121,6 +141,13 @@ public final class ImeConflictFix {
             if (!(s instanceof ChatScreen)) return false;
             for (var c : s.children())
                 if (c instanceof EditBox b && b.getValue().startsWith("/")) return true;
+            return false;
+        }
+
+        /** 万能兜底：任意屏幕中只要 EditBox 获得焦点就认为需要中文输入 */
+        private static boolean hasEditBoxFocus(Screen s) {
+            for (var c : s.children())
+                if (c instanceof EditBox b && b.isFocused()) return true;
             return false;
         }
     }
